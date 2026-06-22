@@ -1,0 +1,77 @@
+# TeamCoder Deploy — Build Docker image and push to GitHub Container Registry
+# Pushed to user's repo as .github/workflows/teamcoder-paas-docker-build.yml
+# Triggered manually (workflow_dispatch) when user clicks Deploy.
+#
+# No secrets needed — uses GITHUB_TOKEN (automatic) for GHCR push.
+# Image name is obfuscated (tc-{hash of owner/repo/branch}) so repo name is not discoverable.
+
+name: TeamCoder Deploy
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image name
+        id: image
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          HASH=$(echo -n "${{ github.repository }}/${BRANCH}" | sha256sum | head -c 8)
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "name=${OWNER}/tc-${HASH}" >> $GITHUB_OUTPUT
+          echo "package=tc-${HASH}" >> $GITHUB_OUTPUT
+
+      - name: Detect Dockerfile
+        id: detect
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "dockerfile=Dockerfile" >> $GITHUB_OUTPUT
+          elif [ -f ".teamcoder/Dockerfile" ]; then
+            echo "dockerfile=.teamcoder/Dockerfile" >> $GITHUB_OUTPUT
+          else
+            echo "::error::No Dockerfile found. Add a Dockerfile to your repo."
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ steps.detect.outputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:latest
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set package public
+        run: |
+          gh api user/packages/container/${{ steps.image.outputs.package }} \
+            --jq '.visibility' 2>/dev/null || true
+          gh api --method PUT user/packages/container/${{ steps.image.outputs.package }}/visibility \
+            -f visibility=public 2>/dev/null || echo "Warning: Could not set package to public. You may need to do this manually in GitHub Settings > Packages."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
