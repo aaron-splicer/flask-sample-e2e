@@ -38,9 +38,18 @@ jobs:
       - name: Set image name
         id: image
         run: |
-          BRANCH="${GITHUB_REF_NAME}"
-          HASH=$(echo -n "${{ github.repository }}/${BRANCH}" | sha256sum | head -c 8)
+          # Tag by the SOURCE branch (from build-trigger.json), NOT the trigger
+          # branch (GITHUB_REF_NAME = teamcoder-deploy-trigger). Must match Java's
+          # obfuscateImageName(owner/repo, deployBranch) — redeploy computes the
+          # expected image path using the source branch, so the tags have to hash
+          # the same inputs or ECR digest lookup 404s and Railway pulls stale.
+          SOURCE_BRANCH=$(jq -r '.branch // empty' .teamcoder/build-trigger.json 2>/dev/null || true)
+          if [ -z "$SOURCE_BRANCH" ]; then
+            SOURCE_BRANCH="${GITHUB_REF_NAME}"
+          fi
+          HASH=$(echo -n "${{ github.repository }}/${SOURCE_BRANCH}" | sha256sum | head -c 8)
           echo "tag=tc-${HASH}" >> $GITHUB_OUTPUT
+          echo "Tagging image for source branch: $SOURCE_BRANCH → tc-${HASH}"
 
       - name: Resolve target image path
         id: target
