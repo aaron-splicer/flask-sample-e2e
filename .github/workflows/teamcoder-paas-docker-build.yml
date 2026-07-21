@@ -32,24 +32,40 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout
+      # First checkout: on teamcoder-deploy-trigger — the branch the workflow fired on.
+      # We need this to read .teamcoder/build-trigger.json (which lives on this branch).
+      - name: Checkout trigger branch (read config)
         uses: actions/checkout@v4
 
-      - name: Set image name
-        id: image
+      - name: Read source branch from build-trigger.json
+        id: src
         run: |
-          # Tag by the SOURCE branch (from build-trigger.json), NOT the trigger
-          # branch (GITHUB_REF_NAME = teamcoder-deploy-trigger). Must match Java's
-          # obfuscateImageName(owner/repo, deployBranch) — redeploy computes the
-          # expected image path using the source branch, so the tags have to hash
-          # the same inputs or ECR digest lookup 404s and Railway pulls stale.
           SOURCE_BRANCH=$(jq -r '.branch // empty' .teamcoder/build-trigger.json 2>/dev/null || true)
           if [ -z "$SOURCE_BRANCH" ]; then
             SOURCE_BRANCH="${GITHUB_REF_NAME}"
           fi
-          HASH=$(echo -n "${{ github.repository }}/${SOURCE_BRANCH}" | sha256sum | head -c 8)
+          echo "branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
+          echo "Source branch: $SOURCE_BRANCH"
+
+      # Second checkout: the SOURCE branch — this is what we actually build. Without
+      # this, we'd build teamcoder-deploy-trigger's code (which never has the user's
+      # develop changes), so image content never reflects new commits and Sequence 4's
+      # marker check always fails.
+      - name: Checkout source branch (for build)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.src.outputs.branch }}
+          clean: true
+
+      - name: Set image name
+        id: image
+        run: |
+          # Tag hash MUST match Java's obfuscateImageName(owner/repo, deployBranch) —
+          # redeploy uses the same formula to look up the image, so ECR lookups 404
+          # if the inputs differ.
+          HASH=$(echo -n "${{ github.repository }}/${{ steps.src.outputs.branch }}" | sha256sum | head -c 8)
           echo "tag=tc-${HASH}" >> $GITHUB_OUTPUT
-          echo "Tagging image for source branch: $SOURCE_BRANCH → tc-${HASH}"
+          echo "Tagging image for source branch: ${{ steps.src.outputs.branch }} → tc-${HASH}"
 
       - name: Resolve target image path
         id: target
