@@ -1,0 +1,8 @@
+{
+  "image": "public.ecr.aws/m9s1b7x8/teamcoder-it:tc-7631fdea",
+  "tag": "tc-7631fdea",
+  "digest": "sha256:8256a80bd38346ac914274298280b05ce6ae0b77b5089a99b1173dbf915decde",
+  "branch": "develop-test-collab-244",
+  "sourceSha": "c50a8f240b8e23802de7b8602adae03b12e898e1",
+  "builtAt": "2026-07-24T03:26:14Z"
+}
