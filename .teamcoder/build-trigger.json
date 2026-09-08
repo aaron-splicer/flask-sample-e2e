@@ -1,0 +1,8 @@
+{
+  "branch" : "develop-test-collab-259",
+  "triggeredBy" : "user@example.com",
+  "triggeredAt" : "2026-09-08T04:14:26.840505Z",
+  "appTemplateId" : 65,
+  "imageRepo" : "teamcoder-it",
+  "imageRegistry" : "663099330265.dkr.ecr.us-east-1.amazonaws.com"
+}
