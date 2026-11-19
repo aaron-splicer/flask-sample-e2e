@@ -1,0 +1,100 @@
+name: TeamCoder Deploy
+
+on:
+  push:
+    branches:
+      - teamcoder-deploy-trigger
+    paths:
+      - .teamcoder/build-trigger.json
+
+env:
+  # ECR_REGISTRY + ECR_REPO defaults — used when .teamcoder/build-trigger.json
+  # doesn't specify overrides. Teamcoder writes the file at deploy time and can
+  # substitute per-team / per-context values (e.g. IT scratch → teamcoder-it,
+  # premium team → their own registry) without editing this yaml.
+  ECR_REGISTRY: 663099330265.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPO: teamcoder
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      # First checkout: on teamcoder-deploy-trigger — the branch the workflow fired on.
+      # We need this to read .teamcoder/build-trigger.json (which lives on this branch).
+      - name: Checkout trigger branch (read config)
+        uses: actions/checkout@v4
+
+      # Read ALL config from build-trigger.json BEFORE re-checking-out to the source
+      # branch — the second checkout wipes the working directory and the trigger
+      # branch's .teamcoder/build-trigger.json goes with it.
+      - name: Read build config from trigger json
+        id: cfg
+        run: |
+          SOURCE_BRANCH=$(jq -r '.branch // empty' .teamcoder/build-trigger.json 2>/dev/null || true)
+          if [ -z "$SOURCE_BRANCH" ]; then
+            SOURCE_BRANCH="${GITHUB_REF_NAME}"
+          fi
+          REGISTRY=$(jq -r '.imageRegistry // empty' .teamcoder/build-trigger.json 2>/dev/null || true)
+          REPO=$(jq -r '.imageRepo // empty' .teamcoder/build-trigger.json 2>/dev/null || true)
+          [ -z "$REGISTRY" ] && REGISTRY="${{ env.ECR_REGISTRY }}"
+          [ -z "$REPO" ] && REPO="${{ env.ECR_REPO }}"
+          HASH=$(echo -n "${{ github.repository }}/${SOURCE_BRANCH}" | sha256sum | head -c 8)
+          echo "branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+          echo "tag=tc-${HASH}" >> $GITHUB_OUTPUT
+          echo "Source branch:    $SOURCE_BRANCH"
+          echo "Target image path: $REGISTRY/$REPO"
+          echo "Image tag:        tc-${HASH}"
+
+      # Second checkout: the SOURCE branch — this is what we actually build. Without
+      # this, we'd build teamcoder-deploy-trigger's code (which never has the user's
+      # develop changes), so image content never reflects new commits and Sequence 4's
+      # marker check always fails.
+      - name: Checkout source branch (for build)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.cfg.outputs.branch }}
+          submodules: true
+          clean: true
+
+      - name: Detect Dockerfile
+        id: detect
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "dockerfile=Dockerfile" >> $GITHUB_OUTPUT
+          elif [ -f ".teamcoder/Dockerfile" ]; then
+            echo "dockerfile=.teamcoder/Dockerfile" >> $GITHUB_OUTPUT
+          else
+            echo "::error::No Dockerfile found. Add a Dockerfile to your repo."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::663099330265:role/teamcoder-ecr-push
+          aws-region: us-east-1
+
+      - name: Log in to private ECR
+        run: aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin "${{ steps.cfg.outputs.registry }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ steps.detect.outputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.cfg.outputs.registry }}/${{ steps.cfg.outputs.repo }}:${{ steps.cfg.outputs.tag }}
+            ${{ steps.cfg.outputs.registry }}/${{ steps.cfg.outputs.repo }}:${{ steps.cfg.outputs.tag }}-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
